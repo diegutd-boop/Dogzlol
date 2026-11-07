@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en-us">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Unity WebGL Player | Raft</title>
+<style>
+  * { margin: 0; padding: 0; border: 0; overflow: hidden; box-sizing: border-box; }
+  html, body { background: #000; width: 100%; height: 100%; }
+  body { position: fixed; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #fff; }
+
+  .webgl-content { position: absolute; width: 100%; height: 100%; }
+  #unityContainer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+  /* Loading screen */
+  #loader {
+    position: absolute; inset: 0; z-index: 50;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 40%, #0e3a52 0%, #06141d 70%, #000 100%);
+    transition: opacity .6s ease;
+  }
+  #loader.hide { opacity: 0; pointer-events: none; }
+  #loader h1 { font-size: clamp(40px, 9vw, 96px); letter-spacing: .25em; font-weight: 800; padding-left: .25em; text-shadow: 0 4px 24px rgba(0,0,0,.6); }
+  #loader .bar { width: min(420px, 78vw); height: 10px; margin-top: 36px; border-radius: 6px; background: rgba(255,255,255,.15); overflow: hidden; }
+  #loader .fill { height: 100%; width: 0%; border-radius: 6px; background: linear-gradient(90deg, #35c1ff, #7dffd2); transition: width .2s linear; }
+  #loader.busy .fill { width: 100% !important; background-size: 200% 100%; background-image: linear-gradient(90deg, #35c1ff, #7dffd2, #35c1ff); animation: slide 1.4s linear infinite; }
+  @keyframes slide { from { background-position: 0 0; } to { background-position: -200% 0; } }
+  #loading-text { margin-top: 16px; font-size: 16px; opacity: .85; text-align: center; padding: 0 16px; }
+  #loader .sub { margin-top: 6px; font-size: 13px; opacity: .55; text-align: center; padding: 0 16px; }
+  #loader button.retry { display: none; margin-top: 18px; padding: 10px 22px; font-size: 16px; border-radius: 8px; background: #35c1ff; color: #00212f; font-weight: 700; cursor: pointer; }
+  #loader.error button.retry { display: inline-block; }
+
+  /* Corner controls */
+  #controls { position: absolute; left: 10px; top: 10px; z-index: 40; display: none; gap: 8px; }
+  #controls.show { display: flex; }
+  #controls button {
+    min-width: 42px; height: 38px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+    background: rgba(0,0,0,.45); color: #fff; font-size: 14px; font-weight: 600;
+    border: 1px solid rgba(255,255,255,.25); opacity: .55; transition: opacity .2s;
+  }
+  #controls button:hover, #controls button:focus-visible { opacity: 1; }
+</style>
+<script src="Build/UnityLoader.js"></script>
+<script>
+// ---------- Download with progress (files are stored as split parts) ----------
+// Exact byte sizes of all parts, used to draw a smooth overall progress bar.
+var TOTAL_BYTES = 19623432 + 19623432 + 19623430 + 16481013 + 16481012;
+var loadedBytes = 0;
+
+function setProgress() {
+  var pct = Math.min(100, Math.floor(100 * loadedBytes / TOTAL_BYTES));
+  var fill = document.querySelector("#loader .fill");
+  var txt = document.getElementById("loading-text");
+  if (fill) fill.style.width = pct + "%";
+  if (txt) txt.textContent = "Downloading game files... " + pct + "% (" + Math.round(loadedBytes / 1048576) + " / " + Math.round(TOTAL_BYTES / 1048576) + " MB)";
+}
+
+async function fetchPart(url) {
+  var lastErr;
+  for (var attempt = 1; attempt <= 3; attempt++) {
+    var got = 0;
+    try {
+      var res = await fetch(url);
+      if (!res.ok) throw new Error("HTTP " + res.status + " for " + url);
+      var reader = res.body.getReader();
+      var chunks = [];
+      for (;;) {
+        var r = await reader.read();
+        if (r.done) break;
+        chunks.push(r.value);
+        got += r.value.length;
+        loadedBytes += r.value.length;
+        setProgress();
+      }
+      return chunks;
+    } catch (e) {
+      lastErr = e;
+      loadedBytes -= got; // this attempt is discarded, so take its bytes back
+      setProgress();
+      await new Promise(function (ok) { setTimeout(ok, 800 * attempt); });
+    }
+  }
+  throw lastErr;
+}
+
+async function mergeFiles(urls) {
+  var all = [];
+  for (var i = 0; i < urls.length; i++) {
+    var chunks = await fetchPart(urls[i]);
+    for (var j = 0; j < chunks.length; j++) all.push(chunks[j]);
+  }
+  return URL.createObjectURL(new Blob(all));
+}
+
+function getParts(file, start, end) {
+  var parts = [];
+  for (var i = start; i <= end; i++) parts.push(file + ".part" + i);
+  return parts;
+}
+
+// The loader fetches the small files itself; this keeps its original behaviour.
+UnityLoader.downloadJob = function (e, t) {
+  var r = new XMLHttpRequest;
+  if (t.parameters.url.startsWith("Build/blob")) {
+    r.open("GET", t.parameters.url.replace("Build/", ""));
+  } else {
+    r.open("GET", t.parameters.url);
+  }
+  r.responseType = "arraybuffer";
+  r.onload = function () {
+    UnityLoader.Compression.decompress(new Uint8Array(r.response), function (e) { t.complete(e); });
+  };
+  t.parameters.onprogress && r.addEventListener("progress", t.parameters.onprogress);
+  t.parameters.onload && r.addEventListener("load", t.parameters.onload);
+  r.send();
+};
+
+var gameInstance = null;
+
+function focusGame() {
+  var cv = document.querySelector("#unityContainer canvas");
+  if (cv) { try { cv.focus(); } catch (e) {} }
+}
+
+function toggleFullscreen() {
+  if (gameInstance) gameInstance.SetFullscreen(1);
+}
+
+function showError(msg) {
+  var l = document.getElementById("loader");
+  l.classList.remove("busy");
+  l.classList.add("error");
+  document.getElementById("loading-text").textContent = msg;
+}
+
+
+// ---------- Start ----------
+function start() {
+  Promise.all([
+    mergeFiles(getParts("Build/Raft-WEBGL.data.unityweb", 1, 3)),
+    mergeFiles(getParts("Build/Raft-WEBGL.asm.code.unityweb", 1, 2))
+  ]).then(function (res) {
+    var dataUrl = res[0], asmCode = res[1];
+    window.dataUrll = dataUrl;   // read by the modified UnityLoader.js
+    window.asmUrll = asmCode;
+    var json = {
+      "TOTAL_MEMORY": 268435456,
+      "dataUrl": dataUrl,
+      "asmCodeUrl": asmCode,
+      "asmMemoryUrl": "Raft-WEBGL.asm.memory.unityweb",
+      "asmFrameworkUrl": "Raft-WEBGL.asm.framework.unityweb",
+      "splashScreenStyle": "Dark",
+      "backgroundColor": "#000000"
+    };
+    var blobUrl = URL.createObjectURL(new Blob([JSON.stringify(json)], { type: "application/json" }));
+
+    var l = document.getElementById("loader");
+    l.classList.add("busy");
+    document.getElementById("loading-text").textContent = "Starting the game...";
+    document.querySelector("#loader .sub").textContent = "This can take up to a minute the first time.";
+
+    gameInstance = UnityLoader.instantiate("unityContainer", json, {
+      url: blobUrl,
+      Module: {
+        onRuntimeInitialized: function () {
+          window.__runtimeReady = true;
+          var l2 = document.getElementById("loader");
+          l2.classList.add("hide");
+          setTimeout(function () { l2.remove(); }, 700);
+          document.getElementById("controls").classList.add("show");
+          focusGame();
+        }
+      }
+    });
+  }).catch(function (e) {
+    console.error(e);
+    showError("Download failed. Check your connection and try again.");
+  });
+}
+
+window.addEventListener("DOMContentLoaded", function () {
+  document.getElementById("fsBtn").addEventListener("click", toggleFullscreen);
+  document.getElementById("retryBtn").addEventListener("click", function () { location.reload(); });
+  // Stop game-key presses on the button from re-triggering it.
+  document.getElementById("fsBtn").addEventListener("keydown", function (e) { e.preventDefault(); });
+  start();
+});
+</script>
+</head>
+
+<body>
+  <div class="webgl-content">
+    <div id="unityContainer"></div>
+
+    <div id="loader">
+      <h1>RAFT</h1>
+      <div class="bar"><div class="fill"></div></div>
+      <div id="loading-text">Preparing...</div>
+      <div class="sub">First load downloads about 90 MB.</div>
+      <button class="retry" id="retryBtn">Try again</button>
+    </div>
+
+    <div id="controls">
+      <button id="fsBtn" title="Toggle fullscreen">Fullscreen</button>
+    </div>
+  </div>
+</body>
+</html>
